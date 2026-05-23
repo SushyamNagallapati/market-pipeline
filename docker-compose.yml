@@ -1,39 +1,135 @@
-# A "service" = one container. We start with just Postgres.
-# We'll add Airflow and Streamlit in later phases.
 services:
   postgres:
-    image:
-      postgres:15 # pinned version — never use 'latest' in real projects
-      # 'latest' can break your pipeline after an auto-update
+    image: postgres:15
     container_name: market_postgres
-    restart:
-      unless-stopped # if the container crashes, restart it automatically
-      # 'unless-stopped' means: restart always EXCEPT if
-      # we manually stopped it — prevents infinite crash loops
-
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER} # pulled from .env file — never hardcode credentials
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # this is why .env is in .gitignore
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-
     ports:
-      - "5432:5432" # host_port:container_port
-        # left side = your laptop, right side = inside Docker
-        # this lets tools like DBeaver or pgAdmin connect from outside
-
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data # named volume = data survives container restarts
-        # without this, every restart wipes your database
-      - ./db/schema:/docker-entrypoint-initdb.d # Postgres auto-runs any .sql files here on
-        # first startup — this is how schema gets loaded
-
-    healthcheck: # other containers wait for Postgres to be READY
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema:/docker-entrypoint-initdb.d
+    healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-# Named volumes are managed by Docker, not tied to a folder on your laptop
-# This is safer than bind mounts for database data
+  airflow_db:
+    image: postgres:15
+    container_name: airflow_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  airflow-init:
+    image: apache/airflow:2.9.1
+    container_name: airflow_init
+    depends_on:
+      airflow_db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    restart: "no"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    container_name: market_airflow_web
+    restart: unless-stopped
+    depends_on:
+      airflow_db:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      PYTHONPATH: /opt/airflow
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags
+      - ./ingestion:/opt/airflow/ingestion
+      - ./dbt_project/market_pipeline:/opt/airflow/dbt_project
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8080:8080"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install yfinance psycopg2-binary requests dbt-postgres --quiet
+        airflow webserver
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    container_name: market_airflow_scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow_db:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow_db:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      PYTHONPATH: /opt/airflow
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags
+      - ./ingestion:/opt/airflow/ingestion
+      - ./dbt_project/market_pipeline:/opt/airflow/dbt_project
+      - airflow_logs:/opt/airflow/logs
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        pip install yfinance psycopg2-binary requests dbt-postgres --quiet
+        airflow scheduler
+
 volumes:
   postgres_data:
+  airflow_db_data:
+  airflow_logs:
