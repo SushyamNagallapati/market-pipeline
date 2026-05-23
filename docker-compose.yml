@@ -1,0 +1,39 @@
+# A "service" = one container. We start with just Postgres.
+# We'll add Airflow and Streamlit in later phases.
+services:
+  postgres:
+    image:
+      postgres:15 # pinned version — never use 'latest' in real projects
+      # 'latest' can break your pipeline after an auto-update
+    container_name: market_postgres
+    restart:
+      unless-stopped # if the container crashes, restart it automatically
+      # 'unless-stopped' means: restart always EXCEPT if
+      # we manually stopped it — prevents infinite crash loops
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER} # pulled from .env file — never hardcode credentials
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD} # this is why .env is in .gitignore
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      - "5432:5432" # host_port:container_port
+        # left side = your laptop, right side = inside Docker
+        # this lets tools like DBeaver or pgAdmin connect from outside
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # named volume = data survives container restarts
+        # without this, every restart wipes your database
+      - ./db/schema:/docker-entrypoint-initdb.d # Postgres auto-runs any .sql files here on
+        # first startup — this is how schema gets loaded
+
+    healthcheck: # other containers wait for Postgres to be READY
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Named volumes are managed by Docker, not tied to a folder on your laptop
+# This is safer than bind mounts for database data
+volumes:
+  postgres_data:
