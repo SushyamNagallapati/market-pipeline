@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: public
+    database: market_pipeline
+    schema: public
+    tables:
+      - name: fact_prices
+        description: "Raw daily OHLCV data from Yahoo Finance"
+      - name: fact_news
+        description: "Raw news headlines from NewsAPI"
+      - name: dim_tickers
+        description: "Ticker dimension — company metadata"
