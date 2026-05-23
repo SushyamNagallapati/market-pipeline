@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# dbt
+logs/
+target/
+dbt_modules/
+.user.yml
