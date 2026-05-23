@@ -1,0 +1,46 @@
+version: 2
+
+models:
+  - name: stg_prices
+    description: "Staging layer over raw fact_prices"
+    columns:
+      - name: price_id
+        tests:
+          - unique
+          - not_null
+      - name: ticker_id
+        tests:
+          - not_null
+      - name: close_price
+        tests:
+          - not_null
+
+  - name: daily_summary
+    description: "Daily OHLCV with derived metrics per ticker"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: price_date
+        tests:
+          - not_null
+      - name: close_price
+        tests:
+          - not_null
+
+  - name: rolling_avg
+    description: "7-day rolling average per ticker"
+    columns:
+      - name: symbol
+        tests:
+          - not_null
+      - name: rolling_avg_7d
+        tests:
+          - not_null
+
+  - name: news_sentiment
+    description: "Aggregated sentiment joined with prices"
+    columns:
+      - name: symbol
+        tests:
+          - not_null

@@ -1,0 +1,166 @@
+# pipeline.yml
+# ------------
+# CI/CD workflow for market pipeline.
+# Triggers on every push to main branch.
+# Two jobs: test (CI) and deploy (CD).
+# Deploy only runs if test passes.
+
+name: Market Pipeline CI/CD
+
+on:
+  push:
+    branches: [main] # only run on main, not feature branches
+  pull_request:
+    branches: [main] # run checks on PRs before merging
+
+# Environment variables available to all jobs
+env:
+  PYTHON_VERSION: "3.12"
+  ACR_NAME: marketpipeline # your Azure Container Registry name
+
+jobs:
+  # ── Job 1: Test (CI) ──────────────────────────────────────────────────
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest # GitHub provides a fresh Ubuntu VM for each run
+
+    services:
+      # Spin up a real Postgres for testing — same as your local Docker
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: pipeline_user
+          POSTGRES_PASSWORD: pipeline123
+          POSTGRES_DB: market_pipeline_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      # Step 1: Check out your code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip # cache dependencies between runs — faster
+
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: |
+          pip install \
+            yfinance \
+            psycopg2-binary \
+            requests \
+            python-dotenv \
+            dbt-postgres \
+            flake8
+
+      # Step 4: Lint Python code
+      # flake8 catches syntax errors and style issues
+      # --max-line-length=100 is more lenient than default 79
+      - name: Lint with flake8
+        run: |
+          flake8 ingestion/ \
+            --max-line-length=100 \
+            --exclude=__pycache__ \
+            --count \
+            --statistics
+
+      # Step 5: Load schema into test database
+      - name: Load schema
+        env:
+          PGPASSWORD: pipeline123
+        run: |
+          psql -h localhost -U pipeline_user -d market_pipeline_test \
+            -f db/schema/001_init.sql
+
+      # Step 6: Run dbt tests
+      # dbt test validates your models against rules you define
+      - name: Run dbt tests
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: pipeline_user
+          POSTGRES_PASSWORD: pipeline123
+          POSTGRES_DB: market_pipeline_test
+        run: |
+          cd dbt_project/market_pipeline
+          dbt deps
+          dbt run --profiles-dir .
+          dbt test --profiles-dir .
+
+  # ── Job 2: Deploy (CD) ────────────────────────────────────────────────
+  deploy:
+    name: Deploy to Azure
+    runs-on: ubuntu-latest
+    needs: test # only runs if test job passes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # only deploy on push to main, not on pull requests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Log into Azure using service principal credentials
+      # These are stored as GitHub Secrets — never in code
+      - name: Login to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # Log into Azure Container Registry
+      - name: Login to ACR
+        run: |
+          az acr login --name ${{ env.ACR_NAME }}
+
+      # Build and push Airflow image
+      - name: Build and push Airflow image
+        run: |
+          docker build \
+            -f docker/Dockerfile.airflow \
+            -t ${{ env.ACR_NAME }}.azurecr.io/airflow:${{ github.sha }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/airflow:latest \
+            .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/airflow:${{ github.sha }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/airflow:latest
+
+      # Build and push Streamlit image
+      - name: Build and push Streamlit image
+        run: |
+          docker build \
+            -f docker/Dockerfile.streamlit \
+            -t ${{ env.ACR_NAME }}.azurecr.io/streamlit:${{ github.sha }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/streamlit:latest \
+            .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/streamlit:${{ github.sha }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/streamlit:latest
+
+      # Update Azure Container Apps to use new images
+      - name: Deploy Airflow to Container Apps
+        run: |
+          az containerapp update \
+            --name market-airflow \
+            --resource-group market-pipeline-rg \
+            --image ${{ env.ACR_NAME }}.azurecr.io/airflow:${{ github.sha }}
+
+      - name: Deploy Streamlit to Container Apps
+        run: |
+          az containerapp update \
+            --name market-streamlit \
+            --resource-group market-pipeline-rg \
+            --image ${{ env.ACR_NAME }}.azurecr.io/streamlit:${{ github.sha }}
+
+      # Notify on success
+      - name: Deployment summary
+        run: |
+          echo "Deployed successfully"
+          echo "Airflow image: ${{ env.ACR_NAME }}.azurecr.io/airflow:${{ github.sha }}"
+          echo "Streamlit image: ${{ env.ACR_NAME }}.azurecr.io/streamlit:${{ github.sha }}"
