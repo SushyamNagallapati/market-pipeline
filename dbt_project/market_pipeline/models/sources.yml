@@ -2,7 +2,6 @@ version: 2
 
 sources:
   - name: public
-    database: market_pipeline
     schema: public
     tables:
       - name: fact_prices
