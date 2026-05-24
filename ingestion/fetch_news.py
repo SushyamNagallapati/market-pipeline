@@ -14,7 +14,11 @@ import os
 import logging
 import requests
 from datetime import date, timedelta
-from ingestion.metrics import PipelineRun
+
+try:
+    from ingestion.metrics import PipelineRun
+except ModuleNotFoundError:
+    from metrics import PipelineRun
 
 import psycopg2
 from dotenv import load_dotenv

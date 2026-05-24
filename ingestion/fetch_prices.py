@@ -11,7 +11,11 @@ Run via Airflow: triggered by market_pipeline DAG
 import os
 import logging
 from datetime import date, timedelta
-from ingestion.metrics import PipelineRun
+
+try:
+    from ingestion.metrics import PipelineRun
+except ModuleNotFoundError:
+    from metrics import PipelineRun
 
 import yfinance as yf
 import psycopg2
