@@ -23,3 +23,13 @@ output "streamlit_url" {
   description = "Public URL for your Streamlit dashboard"
   value       = "https://${azurerm_container_app.streamlit.ingress[0].fqdn}"
 }
+
+output "aks_cluster_name" {
+  description = "AKS cluster name"
+  value       = azurerm_kubernetes_cluster.main.name
+}
+
+output "aks_resource_group" {
+  description = "AKS resource group"
+  value       = azurerm_resource_group.main.name
+}

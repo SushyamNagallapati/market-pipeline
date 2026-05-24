@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow
+  namespace: market-pipeline
+  labels:
+    app: airflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow
+  template:
+    metadata:
+      labels:
+        app: airflow
+    spec:
+      containers:
+        - name: airflow
+          image: sushyamn/market-airflow:latest
+          command: ["/bin/bash"]
+          args:
+            - -c
+            - |
+              airflow db init &&
+              airflow users create \
+                --username admin \
+                --password admin \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@example.com 2>/dev/null || true &&
+              airflow scheduler &
+              airflow webserver
+          env:
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: "LocalExecutor"
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              value: "sqlite:////opt/airflow/airflow.db"
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "false"
+            - name: AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION
+              value: "false"
+            - name: AIRFLOW__CORE__FERNET_KEY
+              value: "ZmDfcTF7_60GrrY167zsiPd67pEvs0aGOv2oasOM1Pg="
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: pipeline-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: pipeline-config
+                  key: POSTGRES_DB
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: pipeline-config
+                  key: POSTGRES_USER
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: pipeline-config
+                  key: POSTGRES_PORT
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-secrets
+                  key: postgres-password
+            - name: NEWS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pipeline-secrets
+                  key: news-api-key
+            - name: PYTHONPATH
+              value: "/opt/airflow"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1000m"

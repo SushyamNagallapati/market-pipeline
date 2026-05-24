@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pipeline-config
+  namespace: market-pipeline
+data:
+  POSTGRES_PORT: "5432"
+  POSTGRES_HOST: "market-pipeline-db.postgres.database.azure.com"
+  POSTGRES_DB: "market_pipeline"
+  POSTGRES_USER: "pipeline_user"

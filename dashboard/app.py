@@ -12,7 +12,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import psycopg2
+from sqlalchemy import create_engine
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -25,54 +25,47 @@ st.set_page_config(
 
 # ── Database connection ────────────────────────────────────────────────────
 @st.cache_resource
-def get_connection():
-    """
-    Cache the connection — @st.cache_resource means this runs once
-    and reuses the same connection for all users/reruns.
-    Without caching, every page interaction opens a new DB connection.
-    """
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST", "localhost"),
-        port=os.getenv("POSTGRES_PORT", 5432),
-        dbname=os.getenv("POSTGRES_DB"),
-        user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD")
+def get_engine():
+    host = os.getenv("POSTGRES_HOST", "localhost")
+    port = os.getenv("POSTGRES_PORT", 5432)
+    db = os.getenv("POSTGRES_DB")
+    user = os.getenv("POSTGRES_USER")
+    password = os.getenv("POSTGRES_PASSWORD")
+    return create_engine(
+        f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db}"
     )
 
 @st.cache_data(ttl=300)
 def load_prices():
-    """Cache price data for 5 minutes — ttl=300 seconds."""
-    conn = get_connection()
+    engine = get_engine()
     return pd.read_sql("""
         SELECT symbol, company, sector, price_date,
                open_price, close_price, pct_change,
                is_significant_move
         FROM analytics.daily_summary
         ORDER BY symbol, price_date
-    """, conn)
+    """, engine)
 
 @st.cache_data(ttl=300)
 def load_sentiment():
-    """Cache sentiment data for 5 minutes."""
-    conn = get_connection()
+    engine = get_engine()
     return pd.read_sql("""
         SELECT symbol, news_date, article_count,
                avg_sentiment, sentiment_label, top_headline,
                close_price, pct_change
         FROM analytics.news_sentiment
         ORDER BY symbol, news_date
-    """, conn)
+    """, engine)
 
 @st.cache_data(ttl=300)
 def load_rolling():
-    """Cache rolling average data for 5 minutes."""
-    conn = get_connection()
+    engine = get_engine()
     return pd.read_sql("""
         SELECT symbol, price_date, close_price,
                rolling_avg_7d, deviation_from_avg
         FROM analytics.rolling_avg
         ORDER BY symbol, price_date
-    """, conn)
+    """, engine)
 
 # ── Layout ─────────────────────────────────────────────────────────────────
 st.title("Market Pipeline Dashboard")

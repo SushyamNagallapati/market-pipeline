@@ -190,3 +190,26 @@ resource "azurerm_container_app" "airflow" {
 
   tags = azurerm_resource_group.main.tags
 }
+
+# ── Azure Kubernetes Service (AKS) ────────────────────────────────────────
+# Managed Kubernetes cluster — Azure handles the control plane
+# We manage the worker nodes and what runs on them
+resource "azurerm_kubernetes_cluster" "main" {
+  name                = "${var.project_name}-aks"
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  dns_prefix          = "${var.project_name}-aks"
+
+  default_node_pool {
+    name       = "default"
+    node_count = 2              # 2 nodes — if one goes down, pods move to the other
+    vm_size    = "Standard_D2s_v5" # cheapest VM that fits our workloads
+  }
+
+  # System assigned identity — AKS manages its own Azure permissions
+  identity {
+    type = "SystemAssigned"
+  }
+
+  tags = azurerm_resource_group.main.tags
+}
