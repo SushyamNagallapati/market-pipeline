@@ -14,6 +14,7 @@ import os
 import logging
 import requests
 from datetime import date, timedelta
+from ingestion.metrics import PipelineRun
 
 import psycopg2
 from dotenv import load_dotenv
@@ -163,23 +164,26 @@ def fetch_news_for_ticker(ticker: str, conn) -> None:
 
 def main():
     if not NEWS_API_KEY:
-        # Fail loudly if key is missing — don't silently produce empty results
         raise ValueError("NEWS_API_KEY not set in .env file")
 
     log.info(f"Starting news ingestion for {FETCH_DATE}")
 
-    try:
-        conn = get_db_connection()
-        log.info("Connected to Postgres")
-    except Exception as e:
-        log.error(f"Database connection failed: {e}")
-        raise
+    with PipelineRun("fetch_news") as run:
+        try:
+            conn = get_db_connection()
+            log.info("Connected to Postgres")
+        except Exception as e:
+            log.error(f"Database connection failed: {e}")
+            raise
 
-    for ticker in TICKERS:
-        fetch_news_for_ticker(ticker, conn)
+        total_inserted = 0
+        for ticker in TICKERS:
+            fetch_news_for_ticker(ticker, conn)
+            total_inserted += 1
 
-    conn.close()
-    log.info("News ingestion complete")
+        conn.close()
+        run.rows_inserted = total_inserted
+        log.info("News ingestion complete")
 
 
 if __name__ == "__main__":

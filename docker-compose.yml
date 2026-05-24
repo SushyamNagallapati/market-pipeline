@@ -129,7 +129,21 @@ services:
         pip install yfinance psycopg2-binary requests dbt-postgres --quiet
         airflow scheduler
 
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: market_grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+
 volumes:
   postgres_data:
   airflow_db_data:
   airflow_logs:
+  grafana_data:

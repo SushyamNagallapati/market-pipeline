@@ -1,0 +1,43 @@
+{
+  "title": "Market Pipeline Health",
+  "panels": [
+    {
+      "title": "Daily close prices",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "rawSql": "SELECT price_date AS time, close_price, symbol FROM fact_prices JOIN dim_tickers USING (ticker_id) ORDER BY price_date",
+          "format": "time_series",
+          "datasource": "PostgreSQL"
+        }
+      ]
+    },
+    {
+      "title": "News articles per ticker",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "rawSql": "SELECT related_ticker AS metric, COUNT(*) AS value FROM fact_news GROUP BY related_ticker ORDER BY value DESC",
+          "format": "table",
+          "datasource": "PostgreSQL"
+        }
+      ]
+    },
+    {
+      "title": "Sentiment by ticker",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "rawSql": "SELECT related_ticker AS metric, ROUND(AVG(sentiment_score)::numeric, 3) AS value FROM fact_news WHERE published_at > NOW() - INTERVAL '7 days' GROUP BY related_ticker",
+          "format": "table",
+          "datasource": "PostgreSQL"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 38,
+  "version": 1
+}

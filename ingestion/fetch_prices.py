@@ -11,6 +11,7 @@ Run via Airflow: triggered by market_pipeline DAG
 import os
 import logging
 from datetime import date, timedelta
+from ingestion.metrics import PipelineRun
 
 import yfinance as yf
 import psycopg2
@@ -130,18 +131,22 @@ def main():
     log.info(f"Starting price ingestion for {FETCH_DATE}")
     log.info(f"Watchlist: {TICKERS}")
 
-    try:
-        conn = get_db_connection()
-        log.info("Connected to Postgres")
-    except Exception as e:
-        log.error(f"Database connection failed: {e}")
-        raise
+    with PipelineRun("fetch_prices") as run:
+        try:
+            conn = get_db_connection()
+            log.info("Connected to Postgres")
+        except Exception as e:
+            log.error(f"Database connection failed: {e}")
+            raise
 
-    for ticker in TICKERS:
-        fetch_and_insert_prices(ticker, conn)
+        total_inserted = 0
+        for ticker in TICKERS:
+            fetch_and_insert_prices(ticker, conn)
+            total_inserted += 1
 
-    conn.close()
-    log.info("Price ingestion complete")
+        conn.close()
+        run.rows_inserted = total_inserted
+        log.info("Price ingestion complete")
 
 
 if __name__ == "__main__":
