@@ -1,189 +1,146 @@
 # Market Pipeline
 
-A production-grade data pipeline that pulls daily stock prices and news headlines, transforms them with dbt, orchestrates with Airflow, and serves a live dashboard on Kubernetes.
+A daily pipeline that pulls stock prices and news headlines, transforms them with dbt, schedules everything in Airflow and serves a Streamlit dashboard. It runs locally with Docker Compose and is set up to deploy to Azure Container Apps with Terraform.
 
-Built to learn how data engineering, DevOps, and cloud infrastructure fit together in a real system.
+The first version worked but had the usual problems of something built quickly: credentials in git, Terraform state on one laptop, a database reachable from the public internet, and a deploy job that changed Azure behind Terraform's back. This is the second pass, mostly about fixing those properly.
 
----
-
-## What it does
-
-Every weekday at 6am ET, the pipeline:
-
-1. Pulls closing prices for AAPL, TSLA, MSFT, GOOGL, AMZN from Yahoo Finance
-2. Pulls relevant news headlines from NewsAPI
-3. Loads raw data into Postgres with deduplication
-4. Runs dbt models to calculate daily summaries, 7-day rolling averages, and sentiment scores
-5. Serves a Streamlit dashboard that reads from the transformed views
-
-The pipeline is idempotent. Running it twice on the same day produces the same result.
+**Status:** the pipeline runs end to end locally. The Azure stack passes `terraform validate` and `az bicep build`, but hasn't been applied to a subscription yet.
 
 ---
 
-## Tech stack
+## Pipeline
 
-| Layer            | Tools                                                    |
-| ---------------- | -------------------------------------------------------- |
-| Ingestion        | Python, yfinance, NewsAPI                                |
-| Storage          | PostgreSQL 15 (star schema)                              |
-| Transformation   | dbt                                                      |
-| Orchestration    | Apache Airflow                                           |
-| Dashboard        | Streamlit, Plotly                                        |
-| Containerization | Docker, Docker Compose                                   |
-| CI/CD            | GitHub Actions                                           |
-| Infrastructure   | Terraform                                                |
-| Cloud            | Azure Container Apps, Azure Database for PostgreSQL           |
-| Observability    | Grafana                                                  |
+Every weekday morning:
 
----
+1. Prices for AAPL, TSLA, MSFT, GOOGL and AMZN come from Yahoo Finance.
+2. Headlines come from NewsAPI, with a rough keyword sentiment score.
+3. Both load into Postgres. Inserts are idempotent, so a re-run doesn't create duplicates.
+4. dbt builds daily summaries, 7-day rolling averages and per-day sentiment.
+5. Streamlit reads the dbt views and nothing else.
 
-## Architecture
+Raw data sits in `fact_prices`, `fact_news` and `dim_tickers`. dbt writes views to an `analytics` schema. The Airflow DAG runs the two fetches in parallel and starts dbt once both succeed.
 
-Raw data lands in a star schema in Postgres. The `fact_prices` and `fact_news` tables store events. The `dim_tickers` table stores company metadata. dbt reads from the raw tables and writes transformed views into an `analytics` schema. Streamlit reads only from the analytics schema.
-
-Airflow runs the full DAG daily. fetch_prices and fetch_news run in parallel, then dbt runs after both complete.
-
----
+| Layer          | Tools                                       |
+| -------------- | ------------------------------------------- |
+| Ingestion      | Python, yfinance, NewsAPI                   |
+| Storage        | PostgreSQL 15                               |
+| Transformation | dbt                                         |
+| Orchestration  | Apache Airflow                              |
+| Dashboard      | Streamlit, Plotly                           |
+| Local          | Docker Compose, Grafana                     |
+| Cloud          | Azure Container Apps, Postgres Flexible Server |
+| IaC            | Terraform, with a Bicep version of the network |
+| CI/CD          | GitHub Actions, with an Azure DevOps version |
 
 ## Running locally
 
-**Requirements:** Docker, Python 3.12, a free NewsAPI key from newsapi.org
-
-**Clone and set up:**
+Needs Docker, Python 3.12 and a NewsAPI key.
 
 ```bash
 git clone https://github.com/SushyamNagallapati/market-pipeline.git
 cd market-pipeline
-cp .env.example .env
-# Fill in your values in .env
-```
-
-**Start Postgres and Airflow:**
-
-```bash
-docker compose up -d
-```
-
-**Install Python dependencies:**
-
-```bash
+cp .env.example .env     # fill in your values
+docker compose up -d     # Postgres, Airflow, Grafana
 pip install yfinance psycopg2-binary requests python-dotenv dbt-postgres streamlit plotly pandas sqlalchemy
 ```
 
-**Run ingestion manually:**
+Run ingestion by hand:
 
 ```bash
 python ingestion/fetch_prices.py
 python ingestion/fetch_news.py
 ```
 
-**Run dbt transformations:**
+`profiles.yml` reads its connection settings from the environment, so load `.env` before running dbt:
 
 ```bash
+set -a; source .env; set +a
 cd dbt_project/market_pipeline
 dbt run
 ```
 
-**Start the dashboard:**
+Dashboard at http://localhost:8501:
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
-Open http://localhost:8501
-
 ---
+
+## What changed in this pass
+
+| Problem in v1                                         | Now                                                                 |
+| ----------------------------------------------------- | ------------------------------------------------------------------- |
+| DB password and API key committed in `profiles.yml` and `secrets.yml` | dbt reads env vars; `secrets.yml` is untracked with an example template; real values live in Key Vault, read by the apps through a managed identity |
+| Postgres firewall allowed `0.0.0.0` (any Azure customer) | Public access off. Reachable only through a private endpoint, with private DNS and an NSG allowing 5432 from the apps subnet |
+| Terraform state in a local file                       | Remote state in Azure Storage with versioning, bootstrapped by script |
+| Deploy job ran `az containerapp update` outside Terraform | Infra goes through `terraform.yml` (plan on PR, apply on merge behind an approval); `pipeline.yml` only rolls out images |
+| Stored Azure credentials in GitHub secrets            | OIDC federation, no long-lived credential                           |
+| No monitoring                                         | Log Analytics, Postgres and Key Vault audit logs, alerts, budget    |
+| Unused 2-node AKS cluster in Terraform                | Removed                                                             |
+
+## Azure layout
+
+All in `terraform/`:
+
+- `main.tf`: resource group, Postgres Flexible Server, Container Apps environment and the Airflow and Streamlit apps
+- `network.tf`: VNet, apps and data subnets, NSG on the data subnet, private DNS zone and link, Postgres private endpoint
+- `keyvault.tf`: RBAC-mode vault, user-assigned identity for the apps (Secrets User), secrets written by Terraform
+- `monitoring.tf`: Log Analytics (1 GB/day cap), diagnostic settings, email alerts on DB CPU, DB storage and Airflow restarts, monthly budget
+
+The Container Apps ignore changes to `image`, since releases come from `pipeline.yml`. Otherwise every plan would try to roll the apps back to `:latest`.
+
+### Bootstrapping
+
+Terraform needs its state storage before it can create anything, so the first run goes in this order:
+
+1. `az login`, then `./scripts/bootstrap-tfstate.sh` (or the `.ps1`). It creates the state storage and writes `terraform/backend.hcl`.
+2. Create `terraform/terraform.tfvars` with the subscription ID, DB password, NewsAPI key, Docker Hub username and `alert_email`.
+3. `cd terraform && terraform init -backend-config=backend.hcl && terraform plan`.
+4. For CI, run `./scripts/setup-github-oidc.sh <storage-account>` and add the variables and secrets it prints. Create a `production` environment with a required reviewer so applies wait for approval.
+
+Teardown is `terraform destroy`. The state storage isn't managed by Terraform, so remove it with `az group delete -n market-pipeline-tfstate-rg`.
 
 ## CI/CD
 
-Every push to main triggers a GitHub Actions workflow that:
+- `pipeline.yml`: flake8, then dbt run and test against a throwaway Postgres. On main it builds both images and points the Container Apps at them.
+- `terraform.yml`: format check and validate on every run. Pull requests get the plan posted as a comment. Merging to main applies the saved plan after approval. Runs are serialized so two jobs never fight over the state lock.
 
-- Lints Python with flake8
-- Spins up a real Postgres instance
-- Loads the schema
-- Runs dbt models and data quality tests
+## Alternative implementations
 
-The deploy job only runs if all tests pass.
+Kept alongside for comparison, not wired into the main flow:
 
----
+- `infra/bicep/network.bicep`: same network in Bicep. Six resources against nine in Terraform, because subnets and the NSG attachment are inline.
+- `azure-devops/terraform-pipeline.yml`: the same validate, plan and apply flow for Azure DevOps, using a workload identity service connection.
+- `scripts/bootstrap-tfstate.ps1`: PowerShell port of the bootstrap script.
 
-## Infrastructure
-
-All Azure resources are provisioned with Terraform. From zero to full cloud deployment:
-
-```bash
-cd terraform
-terraform init
-terraform apply
-```
-
-Resources created: Azure Database for PostgreSQL Flexible Server, Container Apps Environment, Container Apps for Airflow and Streamlit.
-
-Terraform state is stored remotely in Azure Storage. One-time setup:
-
-```bash
-./scripts/bootstrap-tfstate.sh        # creates the storage, writes terraform/backend.hcl
-cd terraform
-terraform init -backend-config=backend.hcl
-```
-
-Networking: the database has no public access. Container Apps run inside a VNet and reach Postgres through a private endpoint, with a private DNS zone and an NSG that only allows port 5432 from the apps subnet (see `terraform/network.tf`).
-
-### CI/CD for infrastructure
-
-- **Pull request:** `terraform.yml` runs format and validate checks, then `terraform plan` and comments the result on the PR.
-- **Merge to main:** the same workflow runs `terraform apply`, pausing for approval via the `production` environment.
-- **App releases:** `pipeline.yml` builds images and rolls them out. Terraform ignores the image field so the two never fight.
-- **Login:** GitHub to Azure uses OIDC (no stored passwords). One-time setup: `./scripts/setup-github-oidc.sh <state-storage-account>`.
-
-### Monitoring
-
-`terraform/monitoring.tf` sends container, Postgres and Key Vault audit logs to a Log Analytics workspace (capped at 1 GB/day). Email alerts fire on high DB CPU, high DB storage and Airflow restarts, and a monthly budget warns before costs get out of hand. Set `alert_email` in `terraform.tfvars` (and the `ALERT_EMAIL` variable in GitHub).
-
-### Bicep, Azure DevOps and PowerShell versions
-
-These are for comparison; Terraform and GitHub Actions stay the primary setup.
-
-- `infra/bicep/network.bicep`: the VNet, NSG, private DNS and private endpoint again in Bicep (6 resources vs 9 in Terraform, since subnets are inline). Deploy with `az deployment group create -g market-pipeline-rg -f infra/bicep/network.bicep -p infra/bicep/network.bicepparam`.
-- `azure-devops/terraform-pipeline.yml`: the same validate, plan and apply flow as the GitHub workflow, with an approval on the `production` environment. Setup steps are at the top of the file.
-- `scripts/bootstrap-tfstate.ps1`: PowerShell version of the state bootstrap script.
-
-To tear everything down:
-
-```bash
-terraform destroy
-```
+`terraform/kubernetes/` holds manifests from an earlier AKS experiment. Nothing uses them.
 
 ---
 
-## Kubernetes manifests (experimental)
+## Design notes
 
-The manifests in `terraform/kubernetes/` are kept for learning but are not used by the current deployment. The AKS cluster was removed from Terraform to avoid cost. Container Apps run the workloads. Copy `secrets.example.yml` to `secrets.yml` and fill it in before applying them to any cluster.
+**Separate ingestion and transformation.** They fail independently. If Yahoo Finance is down, dbt still runs on yesterday's data. If a model breaks, raw data keeps landing.
 
----
+**Airflow over cron.** Run history, retries, and an explicit dependency so dbt only starts after both fetches succeed.
 
-## Key design decisions
+**Container Apps over AKS.** Two small services don't justify running a cluster. The AKS resource was the biggest line item and nothing was deployed to it.
 
-**Why separate ingestion and transformation?** They fail independently. If the Yahoo Finance API goes down, the dbt models still work on yesterday's data. If a dbt model breaks, raw data keeps landing safely.
+**Private endpoint over an IP allow-list.** Removing the public path is easier to reason about than maintaining rules, and "allow Azure services" turned out to be far wider than the name suggests.
 
-**Why dbt instead of plain SQL scripts?** dbt models are version controlled, testable, and auto-document themselves. Schema changes go through pull requests. A broken model fails loudly instead of silently corrupting data.
+**Separate Terraform and app deploys.** Infra changes are rare and reviewed; image rollouts are frequent. Keeping them in separate workflows lets each have the right gate.
 
-**Why Airflow instead of cron?** Cron fails silently. Airflow shows every run's history, retries failed tasks, and only runs dbt after both ingestion tasks succeed. The dependency graph is explicit.
+## Open items
 
-**Why Kubernetes for Streamlit?** Two replicas mean the dashboard stays up if one pod crashes. Kubernetes detects the failure and starts a replacement without any manual intervention.
-
----
-
-## What I learned
-
-This project forced me to think about each layer from a team perspective. Code quality gates in CI/CD, idempotent pipelines, infrastructure as code, and observability are not optional extras. They are what separates a script that works on your laptop from a system a team can operate.
-
-The hardest part was not the code. It was understanding why each tool exists and what problem it solves that simpler alternatives cannot.
+- Apply to a real subscription and fix whatever the first plan and apply turn up.
+- Rotate the NewsAPI key and the old DB password. The originals are still in early commits.
+- Key Vault allows public network access because Terraform runs on a GitHub-hosted runner and has to write the secrets. Callers still need an Azure AD token and a role. Going private-only means a self-hosted runner.
+- The CI identity has Contributor and User Access Administrator at subscription scope. Fine for a sandbox, too broad otherwise. Scope it down once the resource groups exist.
+- No NSG on the apps subnet yet. Container Apps need specific Azure-managed traffic allowed, and I want to test that before adding it.
+- Sentiment is a keyword count. Replace with a proper model, probably as a dbt step.
+- Add dbt tests beyond the basics and a data freshness check on the sources.
 
 ---
-
-## Author
 
 Sushyam Nagallapati
-Master of Engineering in Systems Design, University of Waterloo
-[GitHub Profile](https://github.com/SushyamNagallapati)
+[GitHub](https://github.com/SushyamNagallapati)
