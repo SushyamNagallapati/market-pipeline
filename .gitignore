@@ -20,3 +20,6 @@ terraform/kubernetes/secrets.yml
 
 # Terraform backend settings (generated per machine; template is backend.hcl.example)
 terraform/backend.hcl
+
+# Editor settings
+.vscode/
