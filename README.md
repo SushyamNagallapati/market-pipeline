@@ -107,7 +107,7 @@ Teardown is `terraform destroy`. The state storage isn't managed by Terraform, s
 ## CI/CD
 
 - `pipeline.yml`: flake8, then dbt run and test against a throwaway Postgres. On main it builds both images and points the Container Apps at them.
-- `terraform.yml`: format check and validate on every run. Pull requests get the plan posted as a comment. Merging to main applies the saved plan after approval. Runs are serialized so two jobs never fight over the state lock.
+- `terraform.yml`: format check and validate on every run. Pull requests get the plan posted as a comment. Merging to main applies the saved plan after approval. Runs are serialized so two jobs never fight over the state lock. The plan and apply jobs are skipped until the `AZURE_CLIENT_ID` repo variable exists, so the checks stay green on a fork or a tenant without OIDC.
 
 ## Alternative implementations
 

@@ -66,7 +66,8 @@ jobs:
   plan:
     name: Plan
     needs: validate
-    if: github.event_name == 'pull_request'
+    # skipped until the Azure OIDC variables exist (see scripts/setup-github-oidc.sh)
+    if: github.event_name == 'pull_request' && vars.AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -113,7 +114,7 @@ jobs:
   apply:
     name: Apply
     needs: validate
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.AZURE_CLIENT_ID != ''
     runs-on: ubuntu-latest
     # needs a GitHub environment named "production" with a required reviewer,
     # which is what makes this job wait for a click
