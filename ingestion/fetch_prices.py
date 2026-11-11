@@ -1,11 +1,7 @@
-"""
-fetch_prices.py
----------------
-Pulls daily OHLCV data from Yahoo Finance for a watchlist of tickers.
-Inserts into fact_prices, referencing dim_tickers.
+"""Pull yesterday's prices from Yahoo Finance into fact_prices.
 
-Run manually:  python ingestion/fetch_prices.py
-Run via Airflow: triggered by market_pipeline DAG
+Run by hand with `python ingestion/fetch_prices.py`; Airflow runs it through
+the market_pipeline DAG.
 """
 
 import os
@@ -34,10 +30,7 @@ FETCH_DATE = date.today() - timedelta(days=1)
 
 
 def get_db_connection():
-    """
-    Create and return a Postgres connection using .env credentials.
-    Kept as a function so it's easy to swap for a connection pool later.
-    """
+    """Connect to Postgres using the POSTGRES_* environment variables."""
     return psycopg2.connect(
         host=os.getenv("POSTGRES_HOST", "localhost"),
         port=os.getenv("POSTGRES_PORT", 5432),
@@ -48,10 +41,7 @@ def get_db_connection():
 
 
 def ensure_ticker_exists(cursor, symbol: str) -> int:
-    """
-    Get ticker_id for a symbol, inserting into dim_tickers if not present.
-    This is called the upsert pattern — insert or get existing.
-    """
+    """Return the ticker_id for a symbol, adding it to dim_tickers if it's new."""
     cursor.execute(
         "SELECT ticker_id FROM dim_tickers WHERE symbol = %s",
         (symbol,)
@@ -79,10 +69,10 @@ def ensure_ticker_exists(cursor, symbol: str) -> int:
     return new_id
 
 
-def fetch_and_insert_prices(ticker: str, conn) -> None:
-    """
-    Fetch one day of OHLCV data for a ticker and insert into fact_prices.
-    Skips gracefully if data already exists (idempotent).
+def fetch_and_insert_prices(ticker: str, conn) -> int:
+    """Fetch one day of prices for a ticker and insert them. Safe to re-run.
+
+    Returns how many rows were actually inserted (0 if it already existed).
     """
     log.info(f"Fetching {ticker} for {FETCH_DATE}")
 
@@ -97,9 +87,9 @@ def fetch_and_insert_prices(ticker: str, conn) -> None:
         if df.empty:
             log.warning(
                 f"No data returned for {ticker} on {FETCH_DATE} "
-                f"— market closed or API issue"
+                f"(market closed, or the API is having a bad day)"
             )
-            return
+            return 0
 
         row = df.iloc[0]
 
@@ -123,12 +113,15 @@ def fetch_and_insert_prices(ticker: str, conn) -> None:
                 """,
                 (ticker_id, FETCH_DATE, open_p, close_p, high_p, low_p, volume)
             )
+            inserted = cursor.rowcount
             conn.commit()
-            log.info(f"Inserted {ticker} close={close_p:.2f}")
+            log.info(f"{ticker} close={close_p:.2f} ({inserted} new row)")
+            return inserted
 
     except Exception as e:
         conn.rollback()
         log.error(f"Failed to process {ticker}: {e}")
+        return 0
 
 
 def main():
@@ -145,8 +138,7 @@ def main():
 
         total_inserted = 0
         for ticker in TICKERS:
-            fetch_and_insert_prices(ticker, conn)
-            total_inserted += 1
+            total_inserted += fetch_and_insert_prices(ticker, conn)
 
         conn.close()
         run.rows_inserted = total_inserted

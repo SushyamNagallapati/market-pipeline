@@ -1,10 +1,6 @@
-"""
-app.py
-------
-Streamlit dashboard reading from analytics schema in Postgres.
-Reads dbt-transformed views — never touches raw fact tables directly.
+"""Streamlit dashboard over the dbt views in the analytics schema.
 
-Run locally: streamlit run dashboard/app.py
+Run locally with `streamlit run dashboard/app.py`.
 """
 
 import os
@@ -23,7 +19,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# ── Database connection ────────────────────────────────────────────────────
 @st.cache_resource
 def get_engine():
     host = os.getenv("POSTGRES_HOST", "localhost")
@@ -67,11 +62,9 @@ def load_rolling():
         ORDER BY symbol, price_date
     """, engine)
 
-# ── Layout ─────────────────────────────────────────────────────────────────
 st.title("Market Pipeline Dashboard")
-st.caption("Data refreshed daily at 6am ET via Airflow · Transformed by dbt · Source: Yahoo Finance + NewsAPI")
+st.caption("Refreshed daily at 6am ET by Airflow. Source: Yahoo Finance and NewsAPI, transformed with dbt.")
 
-# Load all data
 prices_df   = load_prices()
 sentiment_df = load_sentiment()
 rolling_df  = load_rolling()
@@ -80,7 +73,7 @@ if prices_df.empty:
     st.warning("No data found. Run the pipeline first.")
     st.stop()
 
-# ── Sidebar filters ────────────────────────────────────────────────────────
+# sidebar
 st.sidebar.header("Filters")
 all_symbols = sorted(prices_df["symbol"].unique().tolist())
 selected = st.sidebar.multiselect(
@@ -93,18 +86,16 @@ if not selected:
     st.warning("Select at least one ticker.")
     st.stop()
 
-# Filter dataframes
 prices_f   = prices_df[prices_df["symbol"].isin(selected)]
 sentiment_f = sentiment_df[sentiment_df["symbol"].isin(selected)]
 rolling_f  = rolling_df[rolling_df["symbol"].isin(selected)]
 
-# ── Row 1: Summary metrics ─────────────────────────────────────────────────
+# latest prices
 st.subheader("Latest close prices")
 cols = st.columns(len(selected))
 
 for i, symbol in enumerate(selected):
     row = prices_f[prices_f["symbol"] == symbol].iloc[-1]
-    delta_color = "normal"
     cols[i].metric(
         label=symbol,
         value=f"${row['close_price']:.2f}",
@@ -113,7 +104,7 @@ for i, symbol in enumerate(selected):
 
 st.divider()
 
-# ── Row 2: Price chart ─────────────────────────────────────────────────────
+# price history
 st.subheader("Close price history")
 fig_price = px.line(
     prices_f,
@@ -132,7 +123,7 @@ st.plotly_chart(fig_price, use_container_width=True)
 
 st.divider()
 
-# ── Row 3: Rolling average + sentiment side by side ────────────────────────
+# rolling average and sentiment, side by side
 col_left, col_right = st.columns(2)
 
 with col_left:
@@ -182,7 +173,7 @@ with col_right:
 
 st.divider()
 
-# ── Row 4: News headlines table ────────────────────────────────────────────
+# headlines
 st.subheader("Top headlines by ticker")
 if not sentiment_f.empty:
     headlines = sentiment_f[["symbol", "news_date", "sentiment_label",

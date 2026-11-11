@@ -1,16 +1,19 @@
 # dbt_project/market_pipeline/profiles.yml
-# This is used by Airflow inside Docker — different from your local ~/.dbt/profiles.yml
-# Uses 'postgres' as host because that's the Docker service name, not localhost
+# Used by Airflow inside Docker and by CI.
+# Connection details come from environment variables so no secrets live in git.
+#   Local Docker: values come from .env via docker-compose (host = 'postgres')
+#   Azure:        values are injected by the container app (host = the Azure DB address)
+# The password has no default on purpose: if it's missing, dbt fails loudly.
 
 market_pipeline:
   outputs:
     dev:
       type: postgres
-      host: market-pipeline-db.postgres.database.azure.com
-      port: 5432
-      user: pipeline_user
-      password: Pipeline2024!
-      dbname: market_pipeline
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | as_number }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
       schema: analytics
       threads: 4
   target: dev

@@ -1,10 +1,5 @@
--- models/daily_summary.sql
--- Aggregates raw price data into a clean daily summary per ticker.
--- Reads from public.fact_prices and public.dim_tickers.
--- dbt writes output to analytics.daily_summary automatically.
-
--- This is a VIEW by default — no data is stored, query runs on demand.
--- We'll make it a TABLE materialization in production for performance.
+-- Daily summary per ticker: prices plus the day's change.
+-- A view for now; switch to a table if the dashboard gets slow.
 
 {{ config(materialized='view') }}
 
@@ -19,11 +14,10 @@ SELECT
     p.low_price,
     p.volume,
 
-    -- derived columns — calculated at query time
     ROUND((p.close_price - p.open_price), 4)                    AS price_change,
     ROUND((p.close_price - p.open_price) / p.open_price * 100, 2) AS pct_change,
 
-    -- flag big moves — useful for dashboard alerts
+    -- anything over 3% either way counts as a big move
     CASE
         WHEN ABS((p.close_price - p.open_price) / p.open_price * 100) > 3
         THEN true

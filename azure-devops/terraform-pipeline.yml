@@ -1,0 +1,138 @@
+# Azure DevOps version of .github/workflows/terraform.yml.
+# PRs get validate + plan; merging to main applies after an approval on the
+# "production" environment.
+#
+# One-time setup in Azure DevOps:
+#   1. Project Settings > Service connections: new Azure Resource Manager
+#      connection using workload identity federation, named in azureServiceConnection below
+#   2. Pipelines > Library: variable group "market-pipeline-vars" with
+#      AZURE_SUBSCRIPTION_ID, TFSTATE_RESOURCE_GROUP, TFSTATE_STORAGE_ACCOUNT,
+#      ALERT_EMAIL, and the secrets DB_PASSWORD, NEWS_API_KEY, DOCKERHUB_USERNAME
+#   3. Pipelines > Environments: create "production" and add an Approval check
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform/*, azure-devops/*]
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform/*, azure-devops/*]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: market-pipeline-vars
+  - name: azureServiceConnection
+    value: azure-market-pipeline
+  - name: tfDir
+    value: $(System.DefaultWorkingDirectory)/terraform
+
+stages:
+  - stage: Validate
+    jobs:
+      - job: validate
+        steps:
+          - script: |
+              terraform fmt -check -recursive -diff
+              terraform init -backend=false -input=false
+              terraform validate
+            displayName: Format and validate
+            workingDirectory: $(tfDir)
+
+  - stage: Plan
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: plan
+        steps:
+          # AzureCLI@2 logs in through the service connection. addSpnToEnvironment
+          # hands us the identity details, which the azurerm provider reuses.
+          - task: AzureCLI@2
+            displayName: Terraform plan
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: $(tfDir)
+              inlineScript: |
+                set -euo pipefail
+                export ARM_USE_OIDC=true
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+                terraform init -input=false \
+                  -backend-config="resource_group_name=$TFSTATE_RESOURCE_GROUP" \
+                  -backend-config="storage_account_name=$TFSTATE_STORAGE_ACCOUNT" \
+                  -backend-config="container_name=tfstate" \
+                  -backend-config="key=market-pipeline.tfstate" \
+                  -backend-config="use_azuread_auth=true" \
+                  -backend-config="use_oidc=true"
+                terraform plan -input=false -no-color -lock-timeout=5m | tee plan.txt
+            env:
+              # secret variables are only visible to a step if mapped like this
+              TF_VAR_subscription_id: $(AZURE_SUBSCRIPTION_ID)
+              TF_VAR_db_password: $(DB_PASSWORD)
+              TF_VAR_news_api_key: $(NEWS_API_KEY)
+              TF_VAR_dockerhub_username: $(DOCKERHUB_USERNAME)
+              TF_VAR_alert_email: $(ALERT_EMAIL)
+              AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+              TFSTATE_RESOURCE_GROUP: $(TFSTATE_RESOURCE_GROUP)
+              TFSTATE_STORAGE_ACCOUNT: $(TFSTATE_STORAGE_ACCOUNT)
+
+          - publish: $(tfDir)/plan.txt
+            artifact: terraform-plan
+            condition: always()
+            displayName: Keep the plan output
+
+  - stage: Apply
+    dependsOn: Validate
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      # a deployment job is what lets the environment's approval check gate it
+      - deployment: apply
+        environment: production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Terraform apply
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    addSpnToEnvironment: true
+                    workingDirectory: $(tfDir)
+                    inlineScript: |
+                      set -euo pipefail
+                      export ARM_USE_OIDC=true
+                      export ARM_CLIENT_ID="$servicePrincipalId"
+                      export ARM_TENANT_ID="$tenantId"
+                      export ARM_OIDC_TOKEN="$idToken"
+                      export ARM_SUBSCRIPTION_ID="$AZURE_SUBSCRIPTION_ID"
+                      terraform init -input=false \
+                        -backend-config="resource_group_name=$TFSTATE_RESOURCE_GROUP" \
+                        -backend-config="storage_account_name=$TFSTATE_STORAGE_ACCOUNT" \
+                        -backend-config="container_name=tfstate" \
+                        -backend-config="key=market-pipeline.tfstate" \
+                        -backend-config="use_azuread_auth=true" \
+                        -backend-config="use_oidc=true"
+                      terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+                      terraform apply -input=false -no-color tfplan
+                  env:
+                    TF_VAR_subscription_id: $(AZURE_SUBSCRIPTION_ID)
+                    TF_VAR_db_password: $(DB_PASSWORD)
+                    TF_VAR_news_api_key: $(NEWS_API_KEY)
+                    TF_VAR_dockerhub_username: $(DOCKERHUB_USERNAME)
+                    TF_VAR_alert_email: $(ALERT_EMAIL)
+                    AZURE_SUBSCRIPTION_ID: $(AZURE_SUBSCRIPTION_ID)
+                    TFSTATE_RESOURCE_GROUP: $(TFSTATE_RESOURCE_GROUP)
+                    TFSTATE_STORAGE_ACCOUNT: $(TFSTATE_STORAGE_ACCOUNT)

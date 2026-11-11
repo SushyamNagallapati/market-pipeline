@@ -1,11 +1,4 @@
--- models/rolling_avg.sql
-
--- 7-day rolling average of close price per ticker.
--- Uses SQL window functions — runs across a partition of rows
--- without collapsing them like GROUP BY would.
-
--- Window functions are one of the most tested SQL concepts
--- in data engineering interviews.
+-- 7-day rolling average of the close price, per ticker.
 
 {{ config(materialized='view') }}
 
@@ -15,10 +8,7 @@ SELECT
     price_date,
     close_price,
 
-    -- AVG() OVER() = window function
-    -- PARTITION BY = calculate separately for each ticker
-    -- ORDER BY = defines the window frame direction
-    -- ROWS BETWEEN 6 PRECEDING AND CURRENT ROW = last 7 days
+    -- window: the current row plus the 6 before it, separately for each ticker
     ROUND(
         AVG(close_price) OVER (
             PARTITION BY symbol
@@ -27,9 +17,7 @@ SELECT
         ), 4
     ) AS rolling_avg_7d,
 
-    -- How far is today's price from the 7d average?
-    -- Positive = trading above average (bullish signal)
-    -- Negative = trading below average (bearish signal)
+    -- how far the close sits above (+) or below (-) the 7-day average
     ROUND(
         close_price - AVG(close_price) OVER (
             PARTITION BY symbol

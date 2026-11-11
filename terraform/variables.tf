@@ -1,7 +1,4 @@
-# variables.tf
-
-# All configurable values for the infrastructure.
-# Actual values come from terraform.tfvars (never committed to Git)
+# Values come from terraform.tfvars locally (git-ignored) and TF_VAR_* in CI.
 
 variable "subscription_id" {
   description = "Azure subscription ID"
@@ -44,9 +41,22 @@ variable "db_name" {
   default     = "market_pipeline"
 }
 
-variable "local_ip" {
-  description = "Your local IP for Postgres firewall rule"
+variable "vnet_address_space" {
+  description = "Address range of the virtual network"
   type        = string
+  default     = "10.10.0.0/16"
+}
+
+variable "apps_subnet_prefix" {
+  description = "Subnet for Container Apps (Consumption environments need at least a /23)"
+  type        = string
+  default     = "10.10.0.0/23"
+}
+
+variable "data_subnet_prefix" {
+  description = "Subnet for the Postgres private endpoint"
+  type        = string
+  default     = "10.10.2.0/27"
 }
 
 variable "news_api_key" {
@@ -61,7 +71,18 @@ variable "dockerhub_username" {
 }
 
 variable "db_location" {
-  description = "Azure region for PostgreSQL — may differ from main location"
+  description = "Azure region for PostgreSQL. Keep it equal to location (latency, cost). Change only if Azure rejects the region for your subscription."
   type        = string
-  default     = "southeastasia"
+  default     = "eastus"
+}
+
+variable "alert_email" {
+  description = "Where alerts and budget warnings are emailed"
+  type        = string
+}
+
+variable "monthly_budget" {
+  description = "Monthly spend limit in USD for the resource group"
+  type        = number
+  default     = 25
 }

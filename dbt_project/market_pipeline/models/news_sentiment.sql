@@ -1,8 +1,4 @@
--- models/news_sentiment.sql
-
--- Aggregates news sentiment per ticker per day.
--- Joins with price data to show sentiment alongside market moves.
--- This is the model that makes your dashboard interesting.
+-- News sentiment per ticker per day, next to that day's price move.
 
 {{ config(materialized='view') }}
 
@@ -15,7 +11,7 @@ WITH daily_sentiment AS (
         ROUND(MAX(sentiment_score), 3)          AS max_sentiment,
         ROUND(MIN(sentiment_score), 3)          AS min_sentiment,
 
-        -- Most positive headline of the day
+        -- the day's most positive headline
         (ARRAY_AGG(headline ORDER BY sentiment_score DESC))[1]
                                                 AS top_headline
 
@@ -34,14 +30,13 @@ SELECT
     ds.min_sentiment,
     ds.top_headline,
 
-    -- Sentiment label — easier to read in dashboard
+    -- label for the dashboard
     CASE
         WHEN ds.avg_sentiment >  0.2 THEN 'positive'
         WHEN ds.avg_sentiment < -0.2 THEN 'negative'
         ELSE 'neutral'
     END AS sentiment_label,
 
-    -- Join price data for context
     p.close_price,
     p.pct_change
 

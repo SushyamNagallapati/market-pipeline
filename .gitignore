@@ -15,3 +15,13 @@ terraform/terraform.tfvars
 terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/.terraform.lock.hcl
+# Kubernetes secrets (real values; use secrets.example.yml as the template)
+terraform/kubernetes/secrets.yml
+
+# Terraform backend settings (generated per machine; template is backend.hcl.example)
+terraform/backend.hcl
+
+# Editor settings
+.vscode/
+terraform/tfplan
+*.tfplan

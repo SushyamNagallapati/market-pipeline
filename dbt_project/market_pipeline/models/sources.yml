@@ -9,4 +9,4 @@ sources:
       - name: fact_news
         description: "Raw news headlines from NewsAPI"
       - name: dim_tickers
-        description: "Ticker dimension — company metadata"
+        description: "Ticker dimension (company metadata)"

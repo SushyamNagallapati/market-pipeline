@@ -1,12 +1,6 @@
--- ============================================================
--- Market Pipeline — initial schema
--- File: db/schema/001_init.sql
--- Runs automatically on first Postgres container startup
--- ============================================================
+-- Initial schema. Postgres runs this on the container's first startup.
 
--- DIMENSION TABLE: tickers
--- Stores context about each stock — changes rarely
--- One row per ticker, not one row per day
+-- tickers: one row per stock, rarely changes
 CREATE TABLE IF NOT EXISTS dim_tickers (
     ticker_id   SERIAL PRIMARY KEY,
     symbol      VARCHAR(10)  NOT NULL UNIQUE,  -- e.g. 'AAPL', 'TSLA'
@@ -16,9 +10,7 @@ CREATE TABLE IF NOT EXISTS dim_tickers (
     created_at  TIMESTAMP DEFAULT NOW()
 );
 
--- FACT TABLE: daily prices
--- One row per ticker per day — this table grows every single day
--- References dim_tickers so we don't repeat company info
+-- prices: one row per ticker per day
 CREATE TABLE IF NOT EXISTS fact_prices (
     price_id        SERIAL PRIMARY KEY,
     ticker_id       INT NOT NULL REFERENCES dim_tickers(ticker_id),
@@ -28,36 +20,33 @@ CREATE TABLE IF NOT EXISTS fact_prices (
     high_price      NUMERIC(12, 4),
     low_price       NUMERIC(12, 4),
     volume          BIGINT,
-    ingested_at     TIMESTAMP DEFAULT NOW(),  -- when WE loaded it, not when market closed
+    ingested_at     TIMESTAMP DEFAULT NOW(),  -- when we loaded it, not when the market closed
 
-    -- deduplication: can't have two rows for same ticker on same day
+    -- one row per ticker per day
     CONSTRAINT uq_price_per_day UNIQUE (ticker_id, price_date)
 );
 
--- FACT TABLE: news articles
--- One row per article — independent from prices but joinable by date
+-- news: one row per article, joined to prices by date later
 CREATE TABLE IF NOT EXISTS fact_news (
     news_id         SERIAL PRIMARY KEY,
     headline        TEXT NOT NULL,
     source          VARCHAR(100),              -- e.g. 'Reuters', 'Bloomberg'
     url             TEXT,
     published_at    TIMESTAMP,
-    related_ticker  VARCHAR(10),              -- loose reference, not a FK
-                                              -- news often covers multiple tickers
-    sentiment_score NUMERIC(4, 3),            -- will be populated by dbt later (-1 to 1)
+    related_ticker  VARCHAR(10),              -- not a FK, articles often cover several tickers
+    sentiment_score NUMERIC(4, 3),            -- -1 to 1, keyword based for now
     ingested_at     TIMESTAMP DEFAULT NOW(),
 
-    -- deduplication: same headline from same source = duplicate
+    -- same headline from the same source counts as a duplicate
     CONSTRAINT uq_article UNIQUE (headline, source)
 );
 
--- INDEXES: speed up the queries our dashboard will run most often
--- Without indexes, Postgres scans every row — slow at scale
+-- indexes for what the dashboard queries most
 CREATE INDEX IF NOT EXISTS idx_prices_date
-    ON fact_prices(price_date DESC);          -- "show me last 30 days" queries
+    ON fact_prices(price_date DESC);
 
 CREATE INDEX IF NOT EXISTS idx_prices_ticker
-    ON fact_prices(ticker_id);               -- "show me all AAPL rows" queries
+    ON fact_prices(ticker_id);
 
 CREATE INDEX IF NOT EXISTS idx_news_published
-    ON fact_news(published_at DESC);         -- "show me today's news" queries
+    ON fact_news(published_at DESC);

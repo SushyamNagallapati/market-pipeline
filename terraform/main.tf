@@ -1,12 +1,6 @@
-# main.tf
-# -------
-# Provisions Azure infrastructure for the market pipeline.
-# Resources created:
-# - Resource group
-# - Azure PostgreSQL Flexible Server
-# - Azure Container Apps Environment
-# - Azure Container Apps (Airflow, Streamlit)
-# Note: Using Docker Hub instead of ACR
+# Core infrastructure: resource group, Postgres, and the Container Apps that run
+# Airflow and Streamlit. Networking is in network.tf, secrets in keyvault.tf.
+# Images come from Docker Hub rather than ACR.
 
 terraform {
   required_providers {
@@ -16,6 +10,12 @@ terraform {
     }
   }
   required_version = ">= 1.5.0"
+
+  # State lives in Azure Storage so it's backed up and locked during applies.
+  # The block is empty on purpose; the settings come from backend.hcl, which
+  # scripts/bootstrap-tfstate.sh writes. Then:
+  #   terraform init -backend-config=backend.hcl
+  backend "azurerm" {}
 }
 
 provider "azurerm" {
@@ -23,7 +23,7 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
-# ── Resource Group ─────────────────────────────────────────────────────────
+# Resource Group
 resource "azurerm_resource_group" "main" {
   name     = "${var.project_name}-rg"
   location = var.location
@@ -35,20 +35,23 @@ resource "azurerm_resource_group" "main" {
   }
 }
 
-# ── PostgreSQL Flexible Server ─────────────────────────────────────────────
-# Flexible Server is the current standard — Single Server is deprecated
+# PostgreSQL Flexible Server
+# Flexible Server, since Single Server is deprecated
 resource "azurerm_postgresql_flexible_server" "main" {
-  name                   = "${var.project_name}-db"
-  resource_group_name    = azurerm_resource_group.main.name
-  location               = var.db_location
-  version                = "15"
-  administrator_login    = var.db_username
-  administrator_password = var.db_password
-  sku_name               = "B_Standard_B1ms"
-  storage_mb             = 32768
-  backup_retention_days  = 7
+  name                         = "${var.project_name}-db"
+  resource_group_name          = azurerm_resource_group.main.name
+  location                     = var.db_location
+  version                      = "15"
+  administrator_login          = var.db_username
+  administrator_password       = var.db_password
+  sku_name                     = "B_Standard_B1ms"
+  storage_mb                   = 32768
+  backup_retention_days        = 7
   geo_redundant_backup_enabled = false
-  zone                   = "1"
+  zone                         = "1"
+
+  # reachable only through the private endpoint
+  public_network_access_enabled = false
 
   tags = azurerm_resource_group.main.tags
 }
@@ -60,35 +63,38 @@ resource "azurerm_postgresql_flexible_server_database" "main" {
   charset   = "utf8"
 }
 
-resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_azure" {
-  name             = "allow-azure-services"
-  server_id        = azurerm_postgresql_flexible_server.main.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
-}
+# No firewall rules on purpose: public access is off and the only way in is the
+# private endpoint in network.tf. Local development uses the Docker Postgres.
 
-resource "azurerm_postgresql_flexible_server_firewall_rule" "allow_local" {
-  name             = "allow-local-dev"
-  server_id        = azurerm_postgresql_flexible_server.main.id
-  start_ip_address = var.local_ip
-  end_ip_address   = var.local_ip
-}
-
-# ── Container Apps Environment ─────────────────────────────────────────────
+# Container Apps Environment
 resource "azurerm_container_app_environment" "main" {
   name                = "${var.project_name}-env"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
 
+  # puts the apps in our VNet so they can reach the private endpoint
+  infrastructure_subnet_id = azurerm_subnet.apps.id
+
+  # container stdout/stderr ends up here
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+
   tags = azurerm_resource_group.main.tags
 }
 
-# ── Streamlit Container App ────────────────────────────────────────────────
+# Streamlit Container App
 resource "azurerm_container_app" "streamlit" {
   name                         = "${var.project_name}-dashboard"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
+
+  # the apps can only start once they are allowed to read the vault
+  depends_on = [azurerm_role_assignment.apps_read_secrets]
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.apps.id]
+  }
 
   template {
     container {
@@ -121,8 +127,9 @@ resource "azurerm_container_app" "streamlit" {
   }
 
   secret {
-    name  = "db-password"
-    value = var.db_password
+    name                = "db-password"
+    key_vault_secret_id = azurerm_key_vault_secret.db_password.id
+    identity            = azurerm_user_assigned_identity.apps.id
   }
 
   ingress {
@@ -135,21 +142,42 @@ resource "azurerm_container_app" "streamlit" {
   }
 
   tags = azurerm_resource_group.main.tags
+
+  # pipeline.yml rolls out new images; don't let Terraform revert them to :latest
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
+  }
 }
 
-# ── Airflow Container App ──────────────────────────────────────────────────
+# Airflow Container App
 resource "azurerm_container_app" "airflow" {
   name                         = "${var.project_name}-airflow"
   container_app_environment_id = azurerm_container_app_environment.main.id
   resource_group_name          = azurerm_resource_group.main.name
   revision_mode                = "Single"
 
+  # the apps can only start once they are allowed to read the vault
+  depends_on = [azurerm_role_assignment.apps_read_secrets]
+
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.apps.id]
+  }
+
   template {
+    # Airflow takes no HTTP traffic, so nothing would ever wake it from scale-to-zero.
+    # Exactly one replica: two schedulers would run every DAG twice.
+    min_replicas = 1
+    max_replicas = 1
+
     container {
       name   = "airflow"
       image  = "${var.dockerhub_username}/market-airflow:latest"
       cpu    = 1.0
       memory = "2Gi"
+
+      # the image has no default command, so start scheduler and webserver together
+      command = ["airflow", "standalone"]
 
       env {
         name  = "POSTGRES_HOST"
@@ -179,37 +207,21 @@ resource "azurerm_container_app" "airflow" {
   }
 
   secret {
-    name  = "db-password"
-    value = var.db_password
+    name                = "db-password"
+    key_vault_secret_id = azurerm_key_vault_secret.db_password.id
+    identity            = azurerm_user_assigned_identity.apps.id
   }
 
   secret {
-    name  = "news-api-key"
-    value = var.news_api_key
+    name                = "news-api-key"
+    key_vault_secret_id = azurerm_key_vault_secret.news_api_key.id
+    identity            = azurerm_user_assigned_identity.apps.id
   }
 
   tags = azurerm_resource_group.main.tags
-}
 
-# ── Azure Kubernetes Service (AKS) ────────────────────────────────────────
-# Managed Kubernetes cluster — Azure handles the control plane
-# We manage the worker nodes and what runs on them
-resource "azurerm_kubernetes_cluster" "main" {
-  name                = "${var.project_name}-aks"
-  resource_group_name = azurerm_resource_group.main.name
-  location            = azurerm_resource_group.main.location
-  dns_prefix          = "${var.project_name}-aks"
-
-  default_node_pool {
-    name       = "default"
-    node_count = 2              # 2 nodes — if one goes down, pods move to the other
-    vm_size    = "Standard_D2s_v5" # cheapest VM that fits our workloads
+  # pipeline.yml rolls out new images; don't let Terraform revert them to :latest
+  lifecycle {
+    ignore_changes = [template[0].container[0].image]
   }
-
-  # System assigned identity — AKS manages its own Azure permissions
-  identity {
-    type = "SystemAssigned"
-  }
-
-  tags = azurerm_resource_group.main.tags
 }
