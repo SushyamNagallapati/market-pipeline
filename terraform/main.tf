@@ -165,6 +165,11 @@ resource "azurerm_container_app" "airflow" {
   }
 
   template {
+    # Airflow takes no HTTP traffic, so nothing would ever wake it from scale-to-zero.
+    # Exactly one replica: two schedulers would run every DAG twice.
+    min_replicas = 1
+    max_replicas = 1
+
     container {
       name   = "airflow"
       image  = "${var.dockerhub_username}/market-airflow:latest"
