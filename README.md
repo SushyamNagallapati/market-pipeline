@@ -4,7 +4,7 @@ A daily pipeline that pulls stock prices and news headlines, transforms them wit
 
 The first version worked but had the usual problems of something built quickly: credentials in git, Terraform state on one laptop, a database reachable from the public internet, and a deploy job that changed Azure behind Terraform's back. This is the second pass, mostly about fixing those properly.
 
-**Status:** the pipeline runs end to end locally. The Azure stack passes `terraform validate` and `az bicep build`, but hasn't been applied to a subscription yet.
+**Status:** the pipeline runs end to end locally. The Azure stack has been applied once to an Azure for Students subscription (all 28 resources, dashboard returning 200, Airflow healthy) and destroyed the same day to keep costs down.
 
 ---
 
@@ -97,7 +97,10 @@ Terraform needs its state storage before it can create anything, so the first ru
 1. `az login`, then `./scripts/bootstrap-tfstate.sh` (or the `.ps1`). It creates the state storage and writes `terraform/backend.hcl`.
 2. Create `terraform/terraform.tfvars` with the subscription ID, DB password, NewsAPI key, Docker Hub username and `alert_email`.
 3. `cd terraform && terraform init -backend-config=backend.hcl && terraform plan`.
-4. For CI, run `./scripts/setup-github-oidc.sh <storage-account>` and add the variables and secrets it prints. Create a `production` environment with a required reviewer so applies wait for approval.
+4. `terraform apply` from the same folder. The first run takes about 25 minutes, most of it the Container Apps environment.
+5. For CI, run `./scripts/setup-github-oidc.sh <storage-account>` and add the variables and secrets it prints (needs a tenant that lets you create app registrations). Create a `production` environment with a required reviewer so applies wait for approval.
+
+Your own user also needs `Storage Blob Data Contributor` on the state storage account, or `terraform init` fails with a 403. Owner on the subscription doesn't cover blob data.
 
 Teardown is `terraform destroy`. The state storage isn't managed by Terraform, so remove it with `az group delete -n market-pipeline-tfstate-rg`.
 
@@ -132,7 +135,9 @@ Kept alongside for comparison, not wired into the main flow:
 
 ## Open items
 
-- Apply to a real subscription and fix whatever the first plan and apply turn up.
+- The first apply turned up one bug: the apps subnet needs a delegation to `Microsoft.App/environments`. Fixed. The apps-to-Postgres path through the private endpoint hasn't been tested with data loaded yet.
+- CI apply is untested. The university tenant blocks app registrations, so OIDC couldn't be set up and the one apply was run from a laptop. `terraform.yml` should work on a tenant that allows it.
+- Student subscriptions restrict regions. Mine allowed only centralus, eastus2, northcentralus, southcentralus and mexicocentral, so `location` and `db_location` are overridden in `terraform.tfvars`.
 - Rotate the NewsAPI key and the old DB password. The originals are still in early commits.
 - Airflow on Azure runs `airflow standalone` with its default SQLite metadata DB, so run history is lost whenever the container restarts. The proper fix is a second database on the Postgres server for Airflow's metadata.
 - Key Vault allows public network access because Terraform runs on a GitHub-hosted runner and has to write the secrets. Callers still need an Azure AD token and a role. Going private-only means a self-hosted runner.

@@ -71,6 +71,15 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
         name: 'snet-apps'
         properties: {
           addressPrefix: appsSubnetPrefix
+          // Container Apps rejects the environment without this delegation
+          delegations: [
+            {
+              name: 'container-apps'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
         }
       }
       {

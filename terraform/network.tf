@@ -13,12 +13,22 @@ resource "azurerm_virtual_network" "main" {
 }
 
 # Subnet for the Container Apps environment.
-# Consumption-only environments need at least a /23 and no delegation.
+# Needs at least a /23, and has to be delegated to Container Apps or Azure
+# rejects the environment (found on the first apply).
 resource "azurerm_subnet" "apps" {
   name                 = "snet-apps"
   resource_group_name  = azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.apps_subnet_prefix]
+
+  delegation {
+    name = "container-apps"
+
+    service_delegation {
+      name    = "Microsoft.App/environments"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
 }
 
 # holds the private endpoint

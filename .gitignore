@@ -23,3 +23,5 @@ terraform/backend.hcl
 
 # Editor settings
 .vscode/
+terraform/tfplan
+*.tfplan
