@@ -1,0 +1,143 @@
+# Infrastructure CI/CD. PRs get a plan posted as a comment; merging to main
+# applies it after a manual approval. Azure login is OIDC, no stored secret
+# (one-time setup in scripts/setup-github-oidc.sh).
+#
+# Needs these under Settings > Secrets and variables > Actions:
+#   Variables: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#              TFSTATE_RESOURCE_GROUP, TFSTATE_STORAGE_ACCOUNT, ALERT_EMAIL
+#   Secrets:   DB_PASSWORD, NEWS_API_KEY, DOCKERHUB_USERNAME
+
+name: Terraform
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["terraform/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["terraform/**", ".github/workflows/terraform.yml"]
+
+# read-only unless a job asks for more
+permissions:
+  contents: read
+
+# one run at a time so two jobs never fight over the state lock
+concurrency:
+  group: terraform
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.9.8"
+  # make the azurerm provider and backend log in with the OIDC token
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  # TF_VAR_<name> sets the variable <name>
+  TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+  TF_VAR_news_api_key: ${{ secrets.NEWS_API_KEY }}
+  TF_VAR_dockerhub_username: ${{ secrets.DOCKERHUB_USERNAME }}
+  TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+
+defaults:
+  run:
+    shell: bash
+    working-directory: terraform
+
+jobs:
+  # no Azure access needed here
+  validate:
+    name: Format and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: Check formatting
+        run: terraform fmt -check -recursive -diff
+      - name: Init without backend
+        run: terraform init -backend=false -input=false
+      - name: Validate
+        run: terraform validate
+
+  # PRs: show what would change, change nothing
+  plan:
+    name: Plan
+    needs: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC token for the Azure login
+      pull-requests: write # to comment the plan
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Init (remote state)
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=market-pipeline.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
+      - name: Plan
+        run: |
+          set -o pipefail
+          terraform plan -input=false -no-color -lock-timeout=5m | tee plan.txt
+      - name: Comment plan on the pull request
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let plan = 'Plan did not produce output (see the workflow log).';
+            try { plan = fs.readFileSync('terraform/plan.txt', 'utf8'); } catch (e) {}
+            // comments are capped at about 65k characters
+            if (plan.length > 60000) plan = '...(truncated)...\n' + plan.slice(-60000);
+            const body = '### Terraform plan\n```\n' + plan + '\n```';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+  # main: apply, after manual approval
+  apply:
+    name: Apply
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # needs a GitHub environment named "production" with a required reviewer,
+    # which is what makes this job wait for a click
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Init (remote state)
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=market-pipeline.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="use_oidc=true"
+      - name: Plan
+        run: terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan
+      # apply the saved plan so exactly what was planned is what runs
+      - name: Apply
+        run: terraform apply -input=false -no-color tfplan

@@ -1,9 +1,6 @@
-"""
-metrics.py
+"""Tiny run-stats recorder: appends each pipeline run to a JSON file for Grafana.
 
-Lightweight metrics collection for the market pipeline.
-Writes pipeline run stats to a JSON file that Grafana can read.
-In production this would push to Prometheus — same concept, simpler setup.
+A real setup would push these to Prometheus instead.
 """
 
 import json
@@ -16,7 +13,7 @@ METRICS_FILE = os.getenv("METRICS_FILE", "/tmp/pipeline_metrics.json")
 
 
 def load_metrics() -> dict:
-    """Load existing metrics or return empty structure."""
+    """Read the metrics file, or start fresh if it's missing or broken."""
     try:
         with open(METRICS_FILE, "r") as f:
             return json.load(f)
@@ -25,20 +22,17 @@ def load_metrics() -> dict:
 
 
 def save_metrics(metrics: dict) -> None:
-    """Save metrics to file."""
+    """Write the metrics file, creating the folder if needed."""
     Path(METRICS_FILE).parent.mkdir(parents=True, exist_ok=True)
     with open(METRICS_FILE, "w") as f:
         json.dump(metrics, f, indent=2, default=str)
 
 
 class PipelineRun:
-    """
-    Context manager that tracks a pipeline run.
-    Records start time, end time, duration, rows inserted, and status.
+    """Times a task and records how it went.
 
-    Usage:
         with PipelineRun("fetch_prices") as run:
-            # do work
+            ...
             run.rows_inserted = 5
     """
 
@@ -60,7 +54,6 @@ class PipelineRun:
             self.status = "failed"
             self.error = str(exc_val)
 
-        # Load existing metrics and append this run
         metrics = load_metrics()
         metrics["runs"].append({
             "task": self.task_name,
@@ -72,9 +65,8 @@ class PipelineRun:
             "error": self.error
         })
 
-        # Keep only last 30 days of runs
+        # only keep the most recent 100 runs
         metrics["runs"] = metrics["runs"][-100:]
         save_metrics(metrics)
 
-        # Don't suppress exceptions
-        return False
+        return False  # never swallow the exception

@@ -1,7 +1,4 @@
-# outputs.tf
-
-# Values printed after terraform apply completes.
-# Use these to configure your app and CI/CD pipeline.
+# Printed after apply.
 
 output "resource_group_name" {
   description = "Resource group name"
@@ -13,23 +10,7 @@ output "postgres_host" {
   value       = azurerm_postgresql_flexible_server.main.fqdn
 }
 
-output "postgres_connection_string" {
-  description = "Connection string"
-  value       = "postgresql://${var.db_username}:${var.db_password}@${azurerm_postgresql_flexible_server.main.fqdn}:5432/${var.db_name}"
-  sensitive   = true
-}
-
 output "streamlit_url" {
   description = "Public URL for your Streamlit dashboard"
   value       = "https://${azurerm_container_app.streamlit.ingress[0].fqdn}"
-}
-
-output "aks_cluster_name" {
-  description = "AKS cluster name"
-  value       = azurerm_kubernetes_cluster.main.name
-}
-
-output "aks_resource_group" {
-  description = "AKS resource group"
-  value       = azurerm_resource_group.main.name
 }

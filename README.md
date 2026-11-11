@@ -32,7 +32,7 @@ The pipeline is idempotent. Running it twice on the same day produces the same r
 | Containerization | Docker, Docker Compose                                   |
 | CI/CD            | GitHub Actions                                           |
 | Infrastructure   | Terraform                                                |
-| Cloud            | Azure Container Apps, Azure Database for PostgreSQL, AKS |
+| Cloud            | Azure Container Apps, Azure Database for PostgreSQL           |
 | Observability    | Grafana                                                  |
 
 ---
@@ -117,7 +117,36 @@ terraform init
 terraform apply
 ```
 
-Resources created: Azure Database for PostgreSQL Flexible Server, Container Apps Environment, AKS cluster with 2 nodes, Container App for Airflow and Streamlit.
+Resources created: Azure Database for PostgreSQL Flexible Server, Container Apps Environment, Container Apps for Airflow and Streamlit.
+
+Terraform state is stored remotely in Azure Storage. One-time setup:
+
+```bash
+./scripts/bootstrap-tfstate.sh        # creates the storage, writes terraform/backend.hcl
+cd terraform
+terraform init -backend-config=backend.hcl
+```
+
+Networking: the database has no public access. Container Apps run inside a VNet and reach Postgres through a private endpoint, with a private DNS zone and an NSG that only allows port 5432 from the apps subnet (see `terraform/network.tf`).
+
+### CI/CD for infrastructure
+
+- **Pull request:** `terraform.yml` runs format and validate checks, then `terraform plan` and comments the result on the PR.
+- **Merge to main:** the same workflow runs `terraform apply`, pausing for approval via the `production` environment.
+- **App releases:** `pipeline.yml` builds images and rolls them out. Terraform ignores the image field so the two never fight.
+- **Login:** GitHub to Azure uses OIDC (no stored passwords). One-time setup: `./scripts/setup-github-oidc.sh <state-storage-account>`.
+
+### Monitoring
+
+`terraform/monitoring.tf` sends container, Postgres and Key Vault audit logs to a Log Analytics workspace (capped at 1 GB/day). Email alerts fire on high DB CPU, high DB storage and Airflow restarts, and a monthly budget warns before costs get out of hand. Set `alert_email` in `terraform.tfvars` (and the `ALERT_EMAIL` variable in GitHub).
+
+### Bicep, Azure DevOps and PowerShell versions
+
+These are for comparison; Terraform and GitHub Actions stay the primary setup.
+
+- `infra/bicep/network.bicep`: the VNet, NSG, private DNS and private endpoint again in Bicep (6 resources vs 9 in Terraform, since subnets are inline). Deploy with `az deployment group create -g market-pipeline-rg -f infra/bicep/network.bicep -p infra/bicep/network.bicepparam`.
+- `azure-devops/terraform-pipeline.yml`: the same validate, plan and apply flow as the GitHub workflow, with an approval on the `production` environment. Setup steps are at the top of the file.
+- `scripts/bootstrap-tfstate.ps1`: PowerShell version of the state bootstrap script.
 
 To tear everything down:
 
@@ -127,15 +156,9 @@ terraform destroy
 
 ---
 
-## Kubernetes deployment
+## Kubernetes manifests (experimental)
 
-The Streamlit dashboard runs with 2 replicas on AKS. Kubernetes restarts crashed pods automatically and routes traffic away from unhealthy ones.
-
-```bash
-az aks get-credentials --resource-group market-pipeline-rg --name market-pipeline-aks
-kubectl apply -f terraform/kubernetes/
-kubectl get pods -n market-pipeline
-```
+The manifests in `terraform/kubernetes/` are kept for learning but are not used by the current deployment. The AKS cluster was removed from Terraform to avoid cost. Container Apps run the workloads. Copy `secrets.example.yml` to `secrets.yml` and fill it in before applying them to any cluster.
 
 ---
 

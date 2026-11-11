@@ -1,31 +1,25 @@
-# pipeline.yml
-# ------------
-# CI/CD workflow for market pipeline.
-# Triggers on every push to main branch.
-# Two jobs: test (CI) and deploy (CD).
-# Deploy only runs if test passes.
+# App CI/CD: test on every push and PR, deploy images on pushes to main.
+# Infrastructure is handled separately in terraform.yml.
 
 name: Market Pipeline CI/CD
 
 on:
   push:
-    branches: [main] # only run on main, not feature branches
+    branches: [main]
   pull_request:
-    branches: [main] # run checks on PRs before merging
+    branches: [main]
 
-# Environment variables available to all jobs
 env:
   PYTHON_VERSION: "3.12"
-  ACR_NAME: marketpipeline # your Azure Container Registry name
+  IMAGE_PREFIX: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
-  # ── Job 1: Test (CI) ──────────────────────────────────────────────────
   test:
     name: Run tests
-    runs-on: ubuntu-latest # GitHub provides a fresh Ubuntu VM for each run
+    runs-on: ubuntu-latest
 
     services:
-      # Spin up a real Postgres for testing — same as your local Docker
+      # throwaway Postgres for the dbt tests
       postgres:
         image: postgres:15
         env:
@@ -41,18 +35,15 @@ jobs:
           --health-retries 5
 
     steps:
-      # Step 1: Check out your code
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 2: Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip # cache dependencies between runs — faster
+          cache: pip
 
-      # Step 3: Install dependencies
       - name: Install dependencies
         run: |
           pip install \
@@ -63,9 +54,7 @@ jobs:
             dbt-postgres \
             flake8
 
-      # Step 4: Lint Python code
-      # flake8 catches syntax errors and style issues
-      # --max-line-length=100 is more lenient than default 79
+      # line length 100 because the default 79 is too tight
       - name: Lint with flake8
         run: |
           flake8 ingestion/ \
@@ -74,7 +63,6 @@ jobs:
             --count \
             --statistics
 
-      # Step 5: Load schema into test database
       - name: Load schema
         env:
           PGPASSWORD: pipeline123
@@ -82,8 +70,6 @@ jobs:
           psql -h localhost -U pipeline_user -d market_pipeline_test \
             -f db/schema/001_init.sql
 
-      # Step 6: Run dbt tests
-      # dbt test validates your models against rules you define
       - name: Run dbt tests
         env:
           POSTGRES_HOST: localhost
@@ -97,21 +83,29 @@ jobs:
           dbt run --profiles-dir .
           dbt test --profiles-dir .
 
-  # ── Job 2: Deploy (CD) ────────────────────────────────────────────────
   deploy:
     name: Deploy to Azure
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # lets the job request the OIDC token for the Azure login
+    permissions:
+      contents: read
+      id-token: write
+    # terraform.yml owns the infrastructure; this job only builds images and
+    # points the existing Container Apps at them
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # OIDC login, no stored password. One-time setup: scripts/setup-github-oidc.sh
       - name: Login to Azure
-        uses: azure/login@v1
+        uses: azure/login@v2
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -123,38 +117,38 @@ jobs:
         run: |
           docker build --platform linux/amd64 \
             -f docker/Dockerfile.streamlit \
-            -t sushyamn/market-streamlit:latest \
-            -t sushyamn/market-streamlit:${{ github.sha }} \
+            -t ${{ env.IMAGE_PREFIX }}/market-streamlit:latest \
+            -t ${{ env.IMAGE_PREFIX }}/market-streamlit:${{ github.sha }} \
             .
-          docker push sushyamn/market-streamlit:latest
-          docker push sushyamn/market-streamlit:${{ github.sha }}
+          docker push ${{ env.IMAGE_PREFIX }}/market-streamlit:latest
+          docker push ${{ env.IMAGE_PREFIX }}/market-streamlit:${{ github.sha }}
 
       - name: Build and push Airflow image
         run: |
           docker build --platform linux/amd64 \
             -f docker/Dockerfile.airflow \
-            -t sushyamn/market-airflow:latest \
-            -t sushyamn/market-airflow:${{ github.sha }} \
+            -t ${{ env.IMAGE_PREFIX }}/market-airflow:latest \
+            -t ${{ env.IMAGE_PREFIX }}/market-airflow:${{ github.sha }} \
             .
-          docker push sushyamn/market-airflow:latest
-          docker push sushyamn/market-airflow:${{ github.sha }}
+          docker push ${{ env.IMAGE_PREFIX }}/market-airflow:latest
+          docker push ${{ env.IMAGE_PREFIX }}/market-airflow:${{ github.sha }}
 
       - name: Deploy Streamlit to Container Apps
         run: |
           az containerapp update \
             --name market-pipeline-dashboard \
             --resource-group market-pipeline-rg \
-            --image sushyamn/market-streamlit:${{ github.sha }}
+            --image ${{ env.IMAGE_PREFIX }}/market-streamlit:${{ github.sha }}
 
       - name: Deploy Airflow to Container Apps
         run: |
           az containerapp update \
             --name market-pipeline-airflow \
             --resource-group market-pipeline-rg \
-            --image sushyamn/market-airflow:${{ github.sha }}
+            --image ${{ env.IMAGE_PREFIX }}/market-airflow:${{ github.sha }}
 
       - name: Deployment summary
         run: |
           echo "Deployed successfully"
-          echo "Streamlit: sushyamn/market-streamlit:${{ github.sha }}"
-          echo "Airflow: sushyamn/market-airflow:${{ github.sha }}"
+          echo "Streamlit: ${{ env.IMAGE_PREFIX }}/market-streamlit:${{ github.sha }}"
+          echo "Airflow: ${{ env.IMAGE_PREFIX }}/market-airflow:${{ github.sha }}"

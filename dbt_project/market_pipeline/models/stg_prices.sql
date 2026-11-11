@@ -1,12 +1,5 @@
--- models/stg_prices.sql
-
--- Staging model — thin layer over raw fact_prices.
--- Staging models clean and standardize raw data before
--- downstream models use it. They never add business logic.
-
--- Why have a staging layer?
--- If Yahoo Finance changes their column names tomorrow,
--- you fix it in ONE staging model, not in every downstream model.
+-- Thin staging layer over fact_prices. If the source columns ever change,
+-- this is the one place to fix. Rows with missing prices are dropped here.
 
 {{ config(materialized='view') }}
 

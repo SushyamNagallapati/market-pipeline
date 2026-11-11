@@ -1,0 +1,6 @@
+# Copy to backend.hcl (git-ignored). scripts/bootstrap-tfstate.sh writes it for you.
+resource_group_name  = "market-pipeline-tfstate-rg"
+storage_account_name = "mpstateXXXXXXXX"   # must be globally unique
+container_name       = "tfstate"
+key                  = "market-pipeline.tfstate"
+use_azuread_auth     = true

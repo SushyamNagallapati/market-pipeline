@@ -1,13 +1,7 @@
-"""
-fetch_news.py
--------------
-Pulls news headlines from NewsAPI for each ticker in our watchlist.
-Inserts into fact_news with basic sentiment scoring.
+"""Pull headlines from NewsAPI for each watched ticker into fact_news.
 
-Key differences from fetch_prices.py:
-- Requires API key (rate limited — 100 requests/day on free tier)
-- Handles text data instead of numbers
-- No strict date constraint — articles can cover multiple tickers
+Needs NEWS_API_KEY. The free tier allows 100 requests a day, which is plenty
+for five tickers.
 """
 
 import os
@@ -33,8 +27,7 @@ log = logging.getLogger(__name__)
 
 TICKERS = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN"]
 
-# Company names map — NewsAPI searches by keyword, not ticker symbol
-# "AAPL" returns nothing, "Apple" returns articles
+# NewsAPI searches by keyword, not ticker: "AAPL" finds nothing, "Apple" works
 TICKER_KEYWORDS = {
     "AAPL": "Apple",
     "TSLA": "Tesla",
@@ -59,15 +52,10 @@ def get_db_connection():
 
 
 def simple_sentiment(headline: str) -> float:
-    """
-    Naive keyword-based sentiment score between -1.0 and 1.0.
-    Returns 0.0 (neutral) if no keywords match.
+    """Crude keyword sentiment, clamped to [-1, 1]. 0.0 if nothing matches.
 
-    Why not use a real NLP model here?
-    Because this script runs in the ingestion layer — fast and simple.
-    The real sentiment analysis will be a dbt model later, or a separate
-    ML step. Ingestion should just land data, not do heavy computation.
-    This placeholder lets us populate the column now.
+    Placeholder on purpose. Ingestion should just land data, so a real model
+    can replace this later (probably in dbt).
     """
     positive = ["surge", "gain", "record", "beat", "strong",
                 "growth", "profit", "rise", "up", "high", "bull"]
@@ -83,45 +71,43 @@ def simple_sentiment(headline: str) -> float:
         if word in headline_lower:
             score -= 0.2
 
-    # Clamp between -1.0 and 1.0
     return max(-1.0, min(1.0, score))
 
 
-def fetch_news_for_ticker(ticker: str, conn) -> None:
-    """
-    Fetch yesterday's news for one ticker keyword and insert into fact_news.
-    Skips duplicates via ON CONFLICT DO NOTHING — same as price ingestion.
+def fetch_news_for_ticker(ticker: str, conn) -> int:
+    """Fetch yesterday's headlines for one ticker. Duplicates are skipped.
+
+    Returns the number of new headlines inserted.
     """
     keyword = TICKER_KEYWORDS.get(ticker, ticker)
     log.info(f"Fetching news for {ticker} (keyword: '{keyword}')")
 
-    # Build request — NewsAPI free tier only allows searching last 30 days
+    # the free tier only searches the last 30 days
     params = {
         "q": keyword,
         "from": str(FETCH_DATE),
         "to": str(FETCH_DATE),
         "language": "en",
         "sortBy": "publishedAt",
-        "pageSize": 10,       # max 10 articles per ticker to stay within rate limits
+        "pageSize": 10,       # keeps us well under the rate limit
         "apiKey": NEWS_API_KEY
     }
 
     try:
         response = requests.get(NEWS_API_URL, params=params, timeout=10)
 
-        # Always check status before reading response body
-        # A 429 means rate limited — back off, don't retry immediately
+        # 429 means we're rate limited; skip this ticker instead of hammering the API
         if response.status_code == 429:
-            log.warning(f"Rate limited by NewsAPI for {ticker} — skipping")
-            return
+            log.warning(f"Rate limited by NewsAPI for {ticker}, skipping")
+            return 0
 
-        response.raise_for_status()  # raises for 4xx/5xx errors
+        response.raise_for_status()
         data = response.json()
 
         articles = data.get("articles", [])
         if not articles:
             log.warning(f"No articles found for {ticker} on {FETCH_DATE}")
-            return
+            return 0
 
         inserted = 0
         skipped = 0
@@ -135,7 +121,7 @@ def fetch_news_for_ticker(ticker: str, conn) -> None:
                 sentiment = simple_sentiment(headline)
 
                 if not headline or headline == "[Removed]":
-                    # NewsAPI returns "[Removed]" for deleted articles
+                    # NewsAPI sends "[Removed]" for deleted articles
                     skipped += 1
                     continue
 
@@ -158,12 +144,14 @@ def fetch_news_for_ticker(ticker: str, conn) -> None:
             conn.commit()
 
         log.info(f"{ticker}: {inserted} inserted, {skipped} skipped")
+        return inserted
 
     except requests.exceptions.Timeout:
         log.error(f"NewsAPI request timed out for {ticker}")
     except requests.exceptions.RequestException as e:
         log.error(f"NewsAPI request failed for {ticker}: {e}")
         conn.rollback()
+    return 0
 
 
 def main():
@@ -182,8 +170,7 @@ def main():
 
         total_inserted = 0
         for ticker in TICKERS:
-            fetch_news_for_ticker(ticker, conn)
-            total_inserted += 1
+            total_inserted += fetch_news_for_ticker(ticker, conn)
 
         conn.close()
         run.rows_inserted = total_inserted

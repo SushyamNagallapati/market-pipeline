@@ -6,7 +6,7 @@ metadata:
   labels:
     app: streamlit
 spec:
-  replicas: 2 # 2 copies — if one crashes, the other stays up
+  replicas: 2 # keeps one running if the other crashes
   selector:
     matchLabels:
       app: streamlit
@@ -53,13 +53,13 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
-          livenessProbe: # Kubernetes restarts container if this fails
+          livenessProbe: # restart the container if this fails
             httpGet:
               path: /_stcore/health
               port: 8501
             initialDelaySeconds: 30
             periodSeconds: 10
-          readinessProbe: # Kubernetes only sends traffic when this passes
+          readinessProbe: # no traffic until this passes
             httpGet:
               path: /_stcore/health
               port: 8501
@@ -78,4 +78,4 @@ spec:
     - protocol: TCP
       port: 80
       targetPort: 8501
-  type: LoadBalancer # Azure creates a public IP automatically
+  type: LoadBalancer # Azure assigns a public IP

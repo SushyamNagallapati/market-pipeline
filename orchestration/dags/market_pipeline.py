@@ -1,31 +1,17 @@
-"""
-market_pipeline.py
-------------------
-Main Airflow DAG for the market data pipeline.
-Runs daily at 6am ET (after market data is available).
-
-Task order:
-fetch_prices ─┐
-              ├─→ dbt_run
-fetch_news   ─┘
-
-fetch_prices and fetch_news run in parallel.
-dbt_run waits for both to complete before transforming.
-"""
+"""Daily market pipeline: fetch prices and news in parallel, then run dbt."""
 
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 
-# Default args apply to every task in the DAG
-# Retries mean a flaky API won't fail the whole pipeline
+# applied to every task in the DAG
 default_args = {
     "owner": "pipeline",
-    "depends_on_past": False,       # don't wait for yesterday's run
-    "retries": 2,                   # retry twice before marking failed
+    "depends_on_past": False,
+    "retries": 2,                   # APIs flake out now and then
     "retry_delay": timedelta(minutes=5),
-    "email_on_failure": False,      # set to True with SMTP config in production
+    "email_on_failure": False,      # needs SMTP set up first
 }
 
 with DAG(
@@ -34,11 +20,11 @@ with DAG(
     description="Daily market data ingestion and transformation",
     schedule="0 11 * * 1-5",       # 6am ET = 11am UTC, weekdays only
     start_date=datetime(2026, 1, 1),
-    catchup=False,                  # don't backfill missed runs on startup
+    catchup=False,                  # no backfilling
     tags=["market", "ingestion", "dbt"],
 ) as dag:
 
-    # Task 1 — fetch stock prices
+    # prices and news don't depend on each other, so they run in parallel
     fetch_prices = PythonOperator(
         task_id="fetch_prices",
         python_callable=lambda: __import__(
@@ -46,7 +32,6 @@ with DAG(
         ).main(),
     )
 
-    # Task 2 — fetch news (runs in parallel with fetch_prices)
     fetch_news = PythonOperator(
         task_id="fetch_news",
         python_callable=lambda: __import__(
@@ -54,14 +39,10 @@ with DAG(
         ).main(),
     )
 
-    # Task 3 — run dbt models (waits for both ingestion tasks)
-    # Task 3 — run dbt models (waits for both ingestion tasks)
     dbt_run = BashOperator(
         task_id="dbt_run",
         bash_command="/home/airflow/.local/bin/dbt run --profiles-dir /opt/airflow/dbt_project --project-dir /opt/airflow/dbt_project",
     )
 
-    # Define dependencies — this is the DAG structure
-    # [fetch_prices, fetch_news] >> dbt_run means:
-    # both must succeed before dbt_run starts
+    # dbt only runs once both ingestion tasks have succeeded
     [fetch_prices, fetch_news] >> dbt_run
