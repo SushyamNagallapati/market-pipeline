@@ -176,6 +176,9 @@ resource "azurerm_container_app" "airflow" {
       cpu    = 1.0
       memory = "2Gi"
 
+      # the image has no default command, so start scheduler and webserver together
+      command = ["airflow", "standalone"]
+
       env {
         name  = "POSTGRES_HOST"
         value = azurerm_postgresql_flexible_server.main.fqdn

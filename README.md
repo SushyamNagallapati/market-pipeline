@@ -134,6 +134,7 @@ Kept alongside for comparison, not wired into the main flow:
 
 - Apply to a real subscription and fix whatever the first plan and apply turn up.
 - Rotate the NewsAPI key and the old DB password. The originals are still in early commits.
+- Airflow on Azure runs `airflow standalone` with its default SQLite metadata DB, so run history is lost whenever the container restarts. The proper fix is a second database on the Postgres server for Airflow's metadata.
 - Key Vault allows public network access because Terraform runs on a GitHub-hosted runner and has to write the secrets. Callers still need an Azure AD token and a role. Going private-only means a self-hosted runner.
 - The CI identity has Contributor and User Access Administrator at subscription scope. Fine for a sandbox, too broad otherwise. Scope it down once the resource groups exist.
 - No NSG on the apps subnet yet. Container Apps need specific Azure-managed traffic allowed, and I want to test that before adding it.
